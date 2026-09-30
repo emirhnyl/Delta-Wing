@@ -20,7 +20,8 @@ YAML konfig ──► parametrik geometri ──► STL (su geçirmez)
 ## Kurulum
 
 ```bash
-cd cfd-delta-wing
+git clone https://github.com/emirhnyl/Delta-Wing.git
+cd Delta-Wing
 pip install -r requirements.txt
 ```
 
@@ -185,7 +186,7 @@ python -m pytest tests -q
 ## Dosya yapısı
 
 ```
-cfd-delta-wing/
+Delta-Wing/
 ├── run.py                  # komut satırı arayüzü
 ├── config/                 # örnek konfigürasyonlar
 ├── deltawing/
