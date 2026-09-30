@@ -13,6 +13,7 @@ için Docker + OpenFOAM kurulumu arayüzden tek tıkla yapılır.
 - [Özellikler](#özellikler)
 - [Arayüz sayfaları](#arayüz-sayfaları)
 - [Kurulum otomasyonu nasıl çalışır](#kurulum-otomasyonu-nasıl-çalışır)
+- [Akış görselleştirme](#akış-görselleştirme)
 - [Harici geometri](#harici-geometri)
 - [CFD kurulumu ve doğruluk](#cfd-kurulumu-ve-doğruluk)
 - [Komut satırı (CLI)](#komut-satırı-cli)
@@ -70,6 +71,11 @@ kesit cl dağılımı (uç stall eğilimi), CD₀, açıklık verimi.
   hücre sayısı, yakınsama değerlendirmesi; hızlı model ile karşılaştırma.
 - Yarım model (simetri düzlemi) veya tam model.
 
+**Akış görselleştirme**: her CFD açısı için otomatik olarak yüzey basınç katsayısı (Cp)
+renklendirmesi, 3B akış çizgileri (hıza göre renkli), veter ve çapraz akış kesitlerinde hız,
+basınç ve toplam basınç haritaları ile kesit içi akış çizgileri; etkileşimli 3B görünüm ve PNG
+görüntüler (rapora ve ZIP'e eklenir).
+
 **Harici geometri**: STL/OBJ yükleme, birim (mm/cm/m/in/ft), eksen yönlendirme, ek dönüş,
 ortalama; planform/ön/ıslak alan, hacim ve sızdırmazlık analizi; referans alan/uzunluk/moment
 noktası seçimi; aynı CFD akışıyla analiz.
@@ -92,6 +98,7 @@ ZIP (sonuçlar + CSV + CFD günlükleri), STL.
 | Hızlı Analiz | α taraması, polarlar, yük dağılımı, tablo, CSV |
 | 3B CFD Analizi | Kaynak (tasarım/harici), açılar, ağ ön ayarı, canlı izleme, sonuçlar |
 | Harici Geometri | STL/OBJ yükleme, yönlendirme, referans büyüklükler |
+| Akış Görselleştirme | Yüzey Cp + 3B akış çizgileri, kesit haritaları, görüntü galerisi |
 | Optimizasyon | Değişkenler, amaç, kısıtlar, canlı yakınsama, en iyi tasarım |
 | Sonuçlar | Çalışma geçmişi, karşılaştırma, rapor, ZIP |
 | Kurulum | Homebrew → Colima/Docker → OpenFOAM imajı → test; kaynak ayarları |
@@ -117,6 +124,27 @@ macOS'ta Docker Desktop yerine, yönetici şifresi gerektirmeyen ve lisans kıs�
 Docker Desktop zaten kuruluysa algılanır ve kullanılır. Bilgisayarda yerel OpenFOAM varsa
 (`/usr/lib/openfoam/…`, `/opt/openfoam…` vb.) Docker'a gerek kalmaz. Mac yeniden başladıktan
 sonra CFD öncesinde Kurulum sayfasında **Docker VM'i başlat**'a basın (veya `colima start`).
+
+## Akış görselleştirme
+
+Her CFD açısı çözüldükten sonra `deltawing/postprocess.py` OpenFOAM çözümünü (ağ + p, U)
+doğrudan okur. ParaView veya OpenFOAM'ın kendi son-işleme araçları gerekmez. Ürettikleri:
+
+| Görsel | Ne gösterir |
+|---|---|
+| Yüzey Cp (üst/alt, 3B) | Basınç dağılımı; delta kanatta hücum kenarı girdaplarının üst yüzeydeki emme izi |
+| 3B akış çizgileri | Gövde etrafındaki akış; hücum kenarından ayrılıp girdaba sarılan çizgiler |
+| Veter kesitleri (x-z, %25/50/75 yarı açıklık) | Cp ve \|U\|/U∞ haritaları, kesit içi akış çizgileri |
+| Çapraz kesitler (y-z: gövde ortası, firar kenarı, iz) | Toplam basınç Cp0 (girdap çekirdekleri ve iz) ve dönen akış |
+
+Tanımlar: `Cp = p/(½U∞²)`, `Cp0 = (p + ½|U|²)/(½U∞²)` (serbest akışta 1, girdap ve izde < 1).
+Arayüzde **Akış Görselleştirme** sayfasından ya da CFD sonuç ekranından açılır. Etkileşimli
+grafikler sağ üstteki kamera simgesiyle PNG olarak kaydedilir. Görselleştirmeden önce çalışılmış
+eski CFD çalışmaları için “Görselleştirmeyi oluştur” düğmesi vardır.
+
+| | |
+|---|---|
+| ![3B akış çizgileri ve yüzey Cp](docs/img/akis-3b.png) | ![Firar kenarı arkası çapraz kesit: girdap çekirdekleri](docs/img/akis-kesit.png) |
 
 ## Harici geometri
 
@@ -190,6 +218,7 @@ Delta-Wing/
 │   ├── runner.py           # yerel / Docker çalıştırıcı
 │   ├── foamforces.py       # alanlardan kuvvet integrasyonu
 │   ├── monitor.py          # canlı artık / katsayı izleme
+│   ├── postprocess.py      # akış görselleştirme: yüzey Cp, kesitler, 3B akış çizgileri
 │   ├── jobs.py             # arka plan iş kuyruğu
 │   ├── setup_env.py        # ortam kontrolü, Homebrew/Colima/Docker otomasyonu
 │   ├── studies.py          # çalışma kayıtları, CFD/optimizasyon işleri, HTML rapor

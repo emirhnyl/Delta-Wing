@@ -90,6 +90,7 @@ export function debounce(fn, ms = 300) { let t; return (...a) => { clearTimeout(
 export const ICONS = {
   dashboard: '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>',
   design: '<svg viewBox="0 0 24 24"><path d="M12 3 21 20 12 17 3 20Z"/></svg>',
+  flow: '<svg viewBox="0 0 24 24"><path d="M3 7c4 0 5-3 9-3s5 3 9 3M3 12c4 0 5-3 9-3s5 3 9 3"/><path d="M4 18a8 3 0 0 0 16 0"/><circle cx="12" cy="17" r="1.6"/></svg>',
   quick: '<svg viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg>',
   cfd: '<svg viewBox="0 0 24 24"><path d="M3 8c3-2 6 2 9 0s6-2 9 0M3 13c3-2 6 2 9 0s6-2 9 0M3 18c3-2 6 2 9 0s6-2 9 0"/></svg>',
   external: '<svg viewBox="0 0 24 24"><path d="M12 3 3 8v8l9 5 9-5V8z"/><path d="m3 8 9 5 9-5M12 13v8"/></svg>',

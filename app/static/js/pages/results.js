@@ -1,3 +1,4 @@
+import { mountFlowViz } from '../flowviz.js';
 import { $, $$, api, state, saveState, closeModal, toast, fmt, esc, icon, fmtDate, polarCharts, resultsTable, modal, empty } from '../core.js';
 
 export const KIND = { quick: ['Hızlı', 'info'], cfd: ['CFD', 'good'], external: ['Harici CFD', 'good'], optimization: ['Optimizasyon', 'warn'] };
@@ -54,12 +55,14 @@ export async function openStudy(id) {
       .filter(([, [v]]) => v !== undefined && v !== null).map(([kk, [v, u]]) => `<div class="stat"><div class="k">${kk}</div><div class="v">${fmt(v)}<span class="u"> ${u}</span></div></div>`).join('')}</div>
     ${s.results?.length ? resultsTable(s.results, [['drag_pressure_N', 'Basınç sürük. [N]'], ['drag_viscous_N', 'Sürtünme sürük. [N]'], ['cells', 'Hücre'], ['converged_hint', 'Yakınsama']]) : '<div class="alert warn">Bu çalışmada sonuç yok (iptal edilmiş veya hata almış olabilir).</div>'}
     <div id="m-charts" style="margin-top:14px"></div>
+    ${s.kind === 'cfd' || s.kind === 'external' ? '<div id="m-flow" style="margin-top:14px"></div>' : ''}
     <div class="grid g2" style="margin-top:14px">${['geometry.png', 'polar.png'].map((f) => `<img src="/api/studies/${id}/file/${f}" onerror="this.remove()" style="width:100%;border:1px solid var(--border);border-radius:8px">`).join('')}</div>`);
   if (s.results?.length > 1) {
     const series = [{ name: s.kind === 'quick' ? 'VLM + Polhamus' : 'OpenFOAM RANS', rows: s.results }];
     if (s.comparison) series.push({ name: 'VLM + Polhamus', rows: s.comparison, dash: true });
     polarCharts(body.querySelector('#m-charts'), series);
   }
+  if (body.querySelector('#m-flow')) mountFlowViz(body.querySelector('#m-flow'), id);
   body.querySelector('[data-apply]')?.addEventListener('click', () => { state.cfg.wing = s.best_config.wing; state.cfg.airfoil = s.best_config.airfoil; saveCfg(); toast('Tasarım uygulandı', 'good'); location.hash = '#/tasarim'; });
   body.querySelector('[data-load]')?.addEventListener('click', () => { state.cfg.wing = s.config.wing; state.cfg.airfoil = s.config.airfoil; if (s.config.flow) state.cfg.flow = s.config.flow; saveCfg(); toast('Tasarım yüklendi', 'good'); location.hash = '#/tasarim'; });
 }

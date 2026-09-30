@@ -460,6 +460,28 @@ def study_file(sid: str, name: str):
     return FileResponse(p)
 
 
+@app.get("/api/studies/{sid}/viz")
+def study_viz(sid: str):
+    st = studies.Study.load(sid)
+    return {"study_id": sid, "cases": studies.viz_cases(st)}
+
+
+@app.get("/api/studies/{sid}/viz/{case}/{name}")
+def study_viz_file(sid: str, case: str, name: str):
+    base = (studies.STUDIES / sid / "cases" / case / "viz").resolve()
+    p = (base / name).resolve()
+    if base not in p.parents or not p.exists():
+        err(FileNotFoundError(name), 404)
+    return FileResponse(p, headers={"Cache-Control": "no-cache"})
+
+
+@app.post("/api/studies/{sid}/viz/{case}/build")
+def study_viz_build(sid: str, case: str):
+    j = jobs.submit("viz", f"Akış görselleştirmesi ({case})", lambda job: studies.viz_job(job, sid, case),
+                    exclusive=False, meta={"study_id": sid, "case": case})
+    return {"job_id": j.id}
+
+
 @app.get("/api/studies/{sid}/download")
 def study_download(sid: str, cases: bool = False):
     st = studies.Study.load(sid)
@@ -471,7 +493,8 @@ def study_download(sid: str, cases: bool = False):
             rel = p.relative_to(st.path)
             if not cases and rel.parts and rel.parts[0] == "cases":
                 keep = {"case_info.json", "log.simpleFoam", "log.checkMesh", "log.snappyHexMesh"}
-                if p.name not in keep and "postProcessing" not in rel.parts:
+                is_img = "viz" in rel.parts and p.suffix == ".png"
+                if p.name not in keep and "postProcessing" not in rel.parts and not is_img:
                     continue
             if "processor" in "/".join(rel.parts):
                 continue

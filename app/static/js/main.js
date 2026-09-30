@@ -6,6 +6,7 @@ import * as cfd from './pages/cfd.js';
 import * as external from './pages/external.js';
 import * as optimize from './pages/optimize.js';
 import * as results from './pages/results.js';
+import * as flow from './pages/flow.js';
 import * as setup from './pages/setup.js';
 import * as settings from './pages/settings.js';
 
@@ -15,6 +16,7 @@ const ROUTES = [
   ['hizli', 'Hızlı Analiz', 'quick', quick],
   ['cfd', '3B CFD Analizi', 'cfd', cfd],
   ['harici', 'Harici Geometri', 'external', external],
+  ['akis', 'Akış Görselleştirme', 'flow', flow],
   ['optimizasyon', 'Optimizasyon', 'optimize', optimize],
   ['sonuclar', 'Sonuçlar', 'results', results],
   null,

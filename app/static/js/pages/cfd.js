@@ -1,5 +1,6 @@
 import { $, $$, api, state, saveState, toast, fmt, esc, icon, mountJob, stopMonitor, polarCharts, resultsTable, empty, refreshEnv } from '../core.js';
 import { numField, bindNumFields } from './design.js';
+import { mountFlowViz } from '../flowviz.js';
 
 let adv = null;
 
@@ -143,9 +144,11 @@ export async function showStudy(sid, el = $('#result')) {
       ${resultsTable(s.results, [['drag_pressure_N', 'Basınç sürük. [N]'], ['drag_viscous_N', 'Sürtünme sürük. [N]'], ['cells', 'Hücre'], ['converged_hint', 'Yakınsama']])}
       <p class="small muted" style="margin:10px 0 0">Kuvvetler tam ${s.kind === 'external' ? 'gövde' : 'kanat'} içindir. q = ${fmt(s.results[0]?.q_Pa)} Pa, S = ${fmt(s.results[0]?.area_m2)} m². Kesin değerler için ağı inceltip sonuçların değişmediğini doğrulayın.</p>
     </div>
+    <div id="fv" style="margin-top:16px"></div>
     ${s.results.length > 1 ? '<div id="sp" style="margin-top:16px"></div>' : ''}`;
   el.querySelector('[data-open]').onclick = async () => { const r = await api.post(`/api/studies/${sid}/open_folder`); toast(r.path); };
   if (s.results.length > 1) polarCharts(el.querySelector('#sp'), series);
+  mountFlowViz(el.querySelector('#fv'), sid);
 }
 
 export function leave() { stopMonitor($('#job')); }

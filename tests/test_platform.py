@@ -98,3 +98,21 @@ def test_web_api_smoke():
     assert r.json()["flow"]["density"] == pytest.approx(isa(2000)["density"])
     assert c.post("/api/geometry/preview", json={"wing": {"type": "yok"}}).status_code == 400
     assert c.get("/vendor/plotly.min.js").status_code == 200
+
+
+def test_cfd_and_flow_visualization_end_to_end(tmp_path):
+    """OpenFOAM (yerel veya Docker) varsa çok kaba bir CFD + görselleştirme; yoksa atlanır."""
+    from deltawing.openfoam import openfoam_available, run_openfoam
+    from deltawing.postprocess import build_visualization
+
+    cfg = load_config(overrides={"openfoam": {
+        "base_cell_size": 0.6, "surface_level": [3, 4], "feature_level": 4, "near_level": 2, "wake_level": 1,
+        "iterations": 40, "write_interval": 40, "average_last": 5, "n_procs": 1}})
+    if not openfoam_available(cfg):
+        pytest.skip("OpenFOAM yok")
+    res = run_openfoam(Wing.from_config(cfg), cfg, 8.0, tmp_path / "case")
+    assert res["CL"] > 0
+    meta = build_visualization(tmp_path / "case", log=lambda *_: None)
+    assert "surface_cp.png" in meta["images"] and len(meta["slices"]) == 6
+    for f in ("surface.json", "slices.json", "streamlines.json"):
+        assert (tmp_path / "case" / "viz" / f).stat().st_size > 1000

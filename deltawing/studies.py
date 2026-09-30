@@ -25,6 +25,7 @@ from .external import ExternalTransform, body_from_external, body_from_wing
 from .geometry import Wing, write_stl
 from .monitor import case_status
 from .openfoam import run_openfoam
+from .postprocess import build_visualization
 from .runner import resolve_runner
 from .vlm import QuickAero, span_loading
 
@@ -182,6 +183,14 @@ def cfd_job(job, cfg: dict, alphas, name: str, source: dict | None = None) -> di
     job.log(f"Çalışma: {st.data['id']}  |  çalıştırıcı: {st.data['runner']}")
     if st.data["runner"] == "none":
         raise RuntimeError("OpenFOAM bulunamadı. Kurulum sayfasından Docker + OpenFOAM kurulumunu tamamlayın.")
+    if st.data["runner"] == "docker":
+        from .runner import docker_available, docker_image_present
+        if not docker_available(20):
+            raise RuntimeError("Docker motoru çalışmıyor. Kurulum sayfasında 'Docker VM'i başlat'a basın "
+                               "(Mac yeniden başladıktan sonra gereklidir) ve analizi tekrar başlatın.")
+        img = cfg["openfoam"].get("docker_image")
+        if img and not docker_image_present(img):
+            raise RuntimeError(f"OpenFOAM imajı ({img}) indirilmemiş. Kurulum sayfasından 'İmajı indir'e basın.")
     # görseller
     try:
         if wing is not None:
@@ -203,6 +212,39 @@ def cfd_job(job, cfg: dict, alphas, name: str, source: dict | None = None) -> di
         raise
 
 
+def case_name(alpha: float) -> str:
+    return f"alpha_{alpha:+06.2f}".replace("+", "p").replace("-", "m")
+
+
+def viz_cases(st: "Study") -> list[dict]:
+    """Çalışmadaki vakalar ve görselleştirme durumları."""
+    out = []
+    for r in st.data.get("results") or []:
+        name = r.get("case") or case_name(float(r["alpha_deg"]))
+        cdir = st.path / "cases" / name
+        if not cdir.exists():
+            continue
+        meta = cdir / "viz" / "meta.json"
+        out.append({"case": name, "alpha_deg": r["alpha_deg"], "CL": r.get("CL"), "CD": r.get("CD"),
+                    "ready": meta.exists(), "meta": json.loads(meta.read_text()) if meta.exists() else None})
+    return out
+
+
+def viz_job(job, sid: str, case: str) -> dict:
+    st = Study.load(sid)
+    cdir = (st.path / "cases" / case).resolve()
+    if st.path.resolve() not in cdir.parents or not cdir.exists():
+        raise FileNotFoundError(case)
+    job.set(0.1, f"{case}: akış görselleştirmesi hazırlanıyor")
+    meta = build_visualization(cdir, log=job.log)
+    for r in st.data.get("results") or []:
+        if (r.get("case") or case_name(float(r["alpha_deg"]))) == case:
+            r["viz"] = True
+    st.save()
+    write_report(st)
+    return {"study_id": sid, "case": case, **meta}
+
+
 def _cfd_loop(job, st, cfg, body, wing, alphas) -> dict:
     from .plots import plot_polars
 
@@ -211,7 +253,7 @@ def _cfd_loop(job, st, cfg, body, wing, alphas) -> dict:
     results = []
     for i, a in enumerate(alphas):
         job.check_cancel()
-        case = st.path / "cases" / (f"alpha_{a:+06.2f}".replace("+", "p").replace("-", "m"))
+        case = st.path / "cases" / case_name(a)
         stop = threading.Event()
 
         def monitor(case=case, i=i, a=a):
@@ -230,6 +272,14 @@ def _cfd_loop(job, st, cfg, body, wing, alphas) -> dict:
             th.join(timeout=5)
         s = case_status(case, end_time)
         res["cells"] = s.get("cells")
+        res["case"] = case.name
+        if cfg.get("postprocess", {}).get("enabled", True):
+            job.set(stage=f"α = {a:g}° · akış görselleştirmesi hazırlanıyor")
+            try:
+                build_visualization(case, log=job.log)
+                res["viz"] = True
+            except Exception as e:  # noqa: BLE001 - görselleştirme sonuçları engellememeli
+                job.log(f"Görselleştirme oluşturulamadı: {e}")
         results.append(res)
         st.data["results"] = results
         st.save()
@@ -358,6 +408,19 @@ def write_report(st: Study) -> Path:
             f"<tr><td>{html.escape(k)}</td><td>{_fmt(v)}</td></tr>" for k, v in o["variables"].items()) + \
             f"<tr><td>Değerlendirme sayısı</td><td>{o['n_evals']}</td></tr>" + \
             f"<tr><td>Amaç</td><td>{html.escape(str(o.get('objective')))}</td></tr></table>"
+    flow_imgs = ""
+    for vc in viz_cases(st) if d["kind"] in ("cfd", "external") else []:
+        if not vc["ready"]:
+            continue
+        vdir = st.path / "cases" / vc["case"] / "viz"
+        picks = [("surface_cp.png", "Yüzey basınç katsayısı"), ("streamlines_3d.png", "3B akış çizgileri"),
+                 ("slice_cross_te_cp0.png", "Firar kenarı arkası çapraz kesit – toplam basınç ve girdaplar"),
+                 ("slice_span50_umag.png", "%50 yarı açıklık veter kesiti – hız")]
+        figs = "".join(f'<figure><img src="data:image/png;base64,{_b64(vdir / f)}"/><figcaption>α = {vc["alpha_deg"]:g}° · {cap}</figcaption></figure>'
+                       for f, cap in picks if (vdir / f).exists())
+        flow_imgs += f"<h3>α = {vc['alpha_deg']:g}°</h3>{figs}"
+    if flow_imgs:
+        flow_imgs = "<h2>Akış görselleştirmesi</h2>" + flow_imgs
     imgs = "".join(f'<figure><img src="data:image/png;base64,{_b64(st.path / f)}"/><figcaption>{cap}</figcaption></figure>'
                    for f, cap in (("geometry.png", "Geometri"), ("polar.png", "Sonuç grafikleri"))
                    if (st.path / f).exists())
@@ -374,7 +437,7 @@ def write_report(st: Study) -> Path:
     doc = f"""<!doctype html><html lang="tr"><head><meta charset="utf-8"><title>{html.escape(d['name'])} – Rapor</title>
 <style>
 body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:#1b1b1a;max-width:1000px;margin:32px auto;padding:0 20px;line-height:1.45}}
-h1{{font-size:26px;margin:0}} h2{{font-size:18px;margin-top:28px;border-bottom:1px solid #e4e3df;padding-bottom:6px}}
+h1{{font-size:26px;margin:0}} h3{{font-size:15px;margin:22px 0 4px}} h2{{font-size:18px;margin-top:28px;border-bottom:1px solid #e4e3df;padding-bottom:6px}}
 .meta{{color:#6b6a66;margin:6px 0 20px}} table{{border-collapse:collapse;width:100%;font-size:13px;margin:8px 0}}
 td,th{{border:1px solid #e4e3df;padding:6px 8px;text-align:left}} th{{background:#f4f3ef}}
 td:not(:first-child){{font-variant-numeric:tabular-nums}} .grid{{display:grid;grid-template-columns:1fr 1fr;gap:20px}}
@@ -389,6 +452,7 @@ figure{{margin:16px 0}} img{{max-width:100%;border:1px solid #e4e3df;border-radi
 <h2>Sonuçlar</h2><table><tr>{head}</tr>{body}</table>
 {comp}{opt}
 {imgs}
+{flow_imgs}
 <h2>Yöntem</h2><p class="note">{method.get(d['kind'], '')}<br>Kuvvetler: L = CL·q·S, D = CD·q·S; S = referans alan,
 q = ½ρV². Kaldırma serbest akışa dik, sürükleme paraleldir. CFD sonuçları ağ bağımsızlığı çalışmasıyla doğrulanmalıdır.</p>
 <p class="meta">Delta-Wing CFD aracı ile oluşturuldu.</p>
