@@ -23,7 +23,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from deltawing.config import load_config, set_path  # noqa: E402
-from deltawing.geometry import DeltaWing, mirror_full, write_stl  # noqa: E402
+from deltawing.geometry import DeltaWing, write_stl  # noqa: E402
 
 
 def _overrides(cfg: dict, sets: list[str]) -> dict:
@@ -58,12 +58,12 @@ def cmd_geometry(cfg, out: Path, args) -> None:
     g = cfg["geometry"]
     v, t = wing.surface_mesh(int(g["n_span"]), float(g["min_tip_chord_ratio"]))
     write_stl(out / "wing_half.stl", v, t, "wing")
-    fv, ft = mirror_full(v, t)
+    fv, ft = wing.surface_mesh(int(g["n_span"]), float(g["min_tip_chord_ratio"]), full=True)
     write_stl(out / "wing_full.stl", fv, ft, "wing")
     plot_geometry(wing, out / "geometry.png")
     (out / "geometry.json").write_text(json.dumps(wing.summary(), indent=2))
     for k, val in wing.summary().items():
-        print(f"  {k:>14}: {val:.5g}")
+        print(f"  {k:>14}: {val:.5g}" if isinstance(val, (int, float)) else f"  {k:>14}: {val}")
     print(f"\nSTL ve görseller: {out}")
 
 
@@ -90,7 +90,6 @@ def cmd_quick(cfg, out: Path, args) -> None:
 
 def cmd_cfd(cfg, out: Path, args) -> None:
     from deltawing.openfoam import openfoam_available, run_openfoam
-    from deltawing.plots import plot_polars
 
     wing = DeltaWing.from_config(cfg)
     alphas = args.alpha or cfg["flow"]["alpha_deg"]

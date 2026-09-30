@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Delta-Wing CFD Studio</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><path d='M16 3 L29 27 L16 23 L3 27 Z' fill='%232a78d6'/></svg>">
+  <link rel="stylesheet" href="/static/css/app.css">
+  <script src="/vendor/plotly.min.js"></script>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <svg viewBox="0 0 32 32" width="28" height="28" aria-hidden="true"><path d="M16 3 L29 27 L16 23 L3 27 Z" fill="currentColor"/></svg>
+        <div><div class="brand-name">Delta-Wing</div><div class="brand-sub">CFD Studio</div></div>
+      </div>
+      <nav id="nav"></nav>
+      <div class="sidebar-foot">
+        <div id="env-pill" class="env-pill"><span class="dot"></span><span>Ortam kontrol ediliyor…</span></div>
+        <div id="jobs-pill" class="jobs-pill hidden"></div>
+      </div>
+    </aside>
+    <main id="main"></main>
+  </div>
+  <div id="toasts"></div>
+  <div id="modal" class="modal hidden"><div class="modal-card"><div id="modal-body"></div></div></div>
+  <script type="module" src="/static/js/main.js"></script>
+</body>
+</html>

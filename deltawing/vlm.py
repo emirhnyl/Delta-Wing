@@ -73,7 +73,8 @@ class Lattice:
 
 def build_lattice(wing: DeltaWing, n_chord: int = 12, n_span: int = 24) -> Lattice:
     # açıklıkta uca doğru sıklaşan dağılım
-    y_e = wing.semi_span * np.sin(np.linspace(0.0, 0.5 * np.pi, n_span + 1))
+    y_e = wing.span_edges(n_span)
+    n_span = len(y_e) - 1
     xi_e = np.linspace(0.0, 1.0, n_chord + 1)
 
     def surf(y, xi):
@@ -242,3 +243,28 @@ class QuickAero:
             L_over_D=float(cl / cd) if cd > 0 else 0.0, q_Pa=q, area_m2=S,
             method="vlm+polhamus" if self.vortex else "vlm",
         )
+
+
+def span_loading(qa: "QuickAero", alpha_deg: float) -> dict:
+    """Potansiyel çözümden açıklık boyunca yük dağılımı (tam kanat, -s..s).
+
+    cl_c / c_ref : şerit kaldırması (eliptik dağılıma yakınlık için)
+    cl_local     : yerel kesit kaldırma katsayısı (uç stall eğilimi için)
+    """
+    w = qa.wing
+    r = solve_potential(w, qa.lat, alpha_deg, qa.aic)
+    y_e = qa.lat.y_edges
+    yc = 0.5 * (y_e[:-1] + y_e[1:])
+    c = w.chord(yc)
+    clc = 2.0 * r.span_load          # V = 1 -> c * cl = 2 Γ
+    cref = w.area / w.span
+    s = w.semi_span
+    ell = 4.0 * r.CL * w.area / (np.pi * w.span) * np.sqrt(np.clip(1 - (yc / s) ** 2, 0, 1)) / cref
+    return {
+        "y": np.concatenate([-yc[::-1], yc]).tolist(),
+        "cl_c_over_cref": (np.concatenate([clc[::-1], clc]) / cref).tolist(),
+        "cl_local": np.concatenate([(clc / c)[::-1], clc / c]).tolist(),
+        "elliptic": np.concatenate([ell[::-1], ell]).tolist(),
+        "CL_potential": r.CL,
+        "e_span_efficiency": float(r.CL**2 / (np.pi * w.aspect_ratio * r.CDi)) if r.CDi > 0 else None,
+    }

@@ -13,10 +13,13 @@ DEFAULTS: dict[str, Any] = {
         "velocity": 50.0,               # m/s
         "density": 1.225,               # kg/m^3
         "kinematic_viscosity": 1.5e-5,  # m^2/s
+        "altitude_m": None,             # verilirse yoğunluk/viskozite/ses hızı ISA'dan hesaplanır
+        "isa_dT": 0.0,
         "speed_of_sound": 340.3,        # m/s
         "alpha_deg": [0.0, 4.0, 8.0, 12.0],
     },
     "wing": {
+        "type": "delta",       # delta | cropped_delta | double_delta | trapezoidal | rectangular | elliptical | custom
         "root_chord": 1.0,     # m
         "span": 1.2,           # m, uçtan uca (tam kanat)
         "le_sweep_deg": 60.0,  # hücum kenarı ok açısı
@@ -36,12 +39,14 @@ DEFAULTS: dict[str, Any] = {
         "min_tip_chord_ratio": 0.02,
     },
     "vlm": {
-        "n_chord": 12,
-        "n_span": 24,
+        "n_chord": 10,
+        "n_span": 36,
         "vortex_lift": "auto",  # auto | on | off  (Polhamus hücum kenarı emme analojisi)
     },
     "openfoam": {
         "case_dir": "runs/baseline",
+        "runner": "auto",        # auto | local | docker
+        "docker_image": "opencfd/openfoam-default:2512",
         "bashrc": None,          # örn. /usr/lib/openfoam/openfoam2306/etc/bashrc (PATH'te değilse)
         "domain": {"upstream": 5.0, "downstream": 10.0, "lateral": 5.0, "vertical": 5.0},
         "base_cell_size": 0.25,  # kök veterine oranla blockMesh hücre boyu

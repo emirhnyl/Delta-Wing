@@ -141,7 +141,7 @@ def latest_time(case: Path) -> Path:
 
 
 def integrate_forces(case: str | Path, patch: str = "wing", rho: float = 1.225,
-                     nu: float = 1.5e-5) -> dict:
+                     nu: float = 1.5e-5, cofr=(0.0, 0.0, 0.0)) -> dict:
     """Yarı model yama kuvvetleri (N): pressure, viscous, total vektörleri."""
     case = Path(case)
     poly = case / "constant" / "polyMesh"
@@ -189,11 +189,14 @@ def integrate_forces(case: str | Path, patch: str = "wing", rho: float = 1.225,
 
     fp = np.zeros(3)
     fv = np.zeros(3)
+    mom = np.zeros(3)
+    cofr = np.asarray(cofr, dtype=float)
     for k, fi in enumerate(pfaces):
         cf, sf = fgeo(int(fi))
         c = int(pcells[k])
         pf = p_patch[k] if isinstance(p_patch, np.ndarray) and p_patch.ndim == 1 and len(p_patch) == nf else p_int[c]
-        fp += rho * pf * sf
+        dfp = rho * pf * sf
+        fp += dfp
         area = np.linalg.norm(sf)
         n = sf / area
         d = abs(np.dot(centres[c] - cf, n))
@@ -202,6 +205,8 @@ def integrate_forces(case: str | Path, patch: str = "wing", rho: float = 1.225,
         nut_w = 0.0
         if nut_patch is not None:
             nut_w = float(nut_patch[k] if np.ndim(nut_patch) and len(np.atleast_1d(nut_patch)) == nf else np.atleast_1d(nut_patch)[0])
-        fv += rho * (nu + nut_w) * du_t / max(d, 1e-300) * area
-    return {"pressure": fp, "viscous": fv, "total": fp + fv, "time": float(tdir.name),
+        dfv = rho * (nu + nut_w) * du_t / max(d, 1e-300) * area
+        fv += dfv
+        mom += np.cross(cf - cofr, dfp + dfv)
+    return {"pressure": fp, "viscous": fv, "total": fp + fv, "moment": mom, "time": float(tdir.name),
             "n_faces": int(nf)}

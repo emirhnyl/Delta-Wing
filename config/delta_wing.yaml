@@ -43,8 +43,8 @@ geometry:
   min_tip_chord_ratio: 0.02
 
 vlm:                      # hızlı çözücü (optimizasyon için)
-  n_chord: 12
-  n_span: 24
+  n_chord: 10
+  n_span: 36
   vortex_lift: auto       # auto: ok açısı >= 45 deg ise Polhamus girdap kaldırması
 
 openfoam:                 # 3B RANS CFD

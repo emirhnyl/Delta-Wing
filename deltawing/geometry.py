@@ -1,4 +1,4 @@
-"""Parametrik delta kanat geometrisi ve su geçirmez STL üretimi.
+"""Parametrik kanat geometrisi ve su geçirmez STL üretimi.
 
 Koordinat sistemi (gövde ekseni)
 --------------------------------
@@ -12,7 +12,6 @@ ağ farklı hücum açılarında yeniden kullanılabilir.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -20,62 +19,115 @@ import numpy as np
 from .airfoil import AirfoilSection, make_airfoil
 
 
-@dataclass
-class DeltaWing:
-    root_chord: float
-    span: float
-    le_sweep_deg: float
-    taper_ratio: float
-    twist_tip_deg: float
-    twist_axis: float
-    dihedral_deg: float
-    root_airfoil: AirfoilSection
-    tip_airfoil: AirfoilSection
-    blend_exponent: float = 1.0
+class Wing:
+    """Genel kanat: planform istasyonları + kök/uç profili karışımı.
+
+    Planform tipleri ``planforms.py`` içinde tanımlıdır (delta, çift delta, trapez,
+    dikdörtgen, eliptik, özel). Tüm geometrik büyüklükler istasyonlardan sayısal
+    olarak hesaplanır.
+    """
+
+    def __init__(self, ys, xle, chord, twist_extra_deg, root_airfoil: AirfoilSection,
+                 tip_airfoil: AirfoilSection, twist_tip_deg: float = 0.0, twist_axis: float = 0.25,
+                 dihedral_deg: float = 0.0, blend_exponent: float = 1.0, kind: str = "delta",
+                 label: str = ""):
+        self._y = np.asarray(ys, dtype=float)
+        self._xle = np.asarray(xle, dtype=float)
+        self._c = np.asarray(chord, dtype=float)
+        self._tw = np.asarray(twist_extra_deg, dtype=float)
+        self.root_airfoil = root_airfoil
+        self.tip_airfoil = tip_airfoil
+        self.twist_tip_deg = float(twist_tip_deg)
+        self.twist_axis = float(twist_axis)
+        self.dihedral_deg = float(dihedral_deg)
+        self.blend_exponent = float(blend_exponent)
+        self.kind = kind
+        self.label = label or kind
+        self.validate()
+        self._integrals()
 
     # ------------------------------------------------------------------ build
     @classmethod
-    def from_config(cls, cfg: dict) -> "DeltaWing":
+    def from_config(cls, cfg: dict) -> "Wing":
+        from .planforms import WING_TYPES, stations
+
         w, a = cfg["wing"], cfg["airfoil"]
         base = cfg.get("_base_dir")
         base = Path(base) if base else None
         n = int(a.get("n_points", 60))
-        wing = cls(
-            root_chord=float(w["root_chord"]),
-            span=float(w["span"]),
-            le_sweep_deg=float(w["le_sweep_deg"]),
-            taper_ratio=float(w["taper_ratio"]),
-            twist_tip_deg=float(w.get("twist_tip_deg", 0.0)),
-            twist_axis=float(w.get("twist_axis", 0.25)),
-            dihedral_deg=float(w.get("dihedral_deg", 0.0)),
-            root_airfoil=make_airfoil(a["root"], n, base),
-            tip_airfoil=make_airfoil(a.get("tip", a["root"]), n, base),
-            blend_exponent=float(a.get("blend_exponent", 1.0)),
-        )
-        wing.validate()
-        return wing
+        kind = w.get("type", "delta")
+        ys, xle, c, tw = stations(w)
+        return cls(ys, xle, c, tw,
+                   root_airfoil=make_airfoil(a["root"], n, base),
+                   tip_airfoil=make_airfoil(a.get("tip", a["root"]), n, base),
+                   twist_tip_deg=float(w.get("twist_tip_deg", 0.0)),
+                   twist_axis=float(w.get("twist_axis", 0.25)),
+                   dihedral_deg=float(w.get("dihedral_deg", 0.0)),
+                   blend_exponent=float(a.get("blend_exponent", 1.0)),
+                   kind=kind, label=WING_TYPES[kind]["label"])
 
     def validate(self) -> None:
-        if self.root_chord <= 0 or self.span <= 0:
-            raise ValueError("root_chord ve span pozitif olmalı")
-        if not 0.0 <= self.taper_ratio <= 1.0:
-            raise ValueError("taper_ratio 0..1 aralığında olmalı")
-        if not 0.0 <= self.le_sweep_deg < 85.0:
-            raise ValueError("le_sweep_deg 0..85 aralığında olmalı")
+        if len(self._y) < 2 or self._y[-1] <= 0:
+            raise ValueError("Açıklık pozitif olmalı")
+        if self._c[0] <= 0 or np.any(self._c < 0):
+            raise ValueError("Veter değerleri pozitif olmalı")
+        if np.any(np.diff(self._y) <= 0):
+            raise ValueError("İstasyonlar açıklık boyunca artan sırada olmalı")
+
+    def _integrals(self) -> None:
+        y = self.fine_y(400)
+        c = self.chord(y)
+        xl = self.x_le(y)
+        S2 = np.trapezoid(c, y)                      # yarı alan
+        self._area = 2.0 * S2
+        self._mac = np.trapezoid(c * c, y) / S2
+        self._mac_y = np.trapezoid(c * y, y) / S2
+        self._mac_xle = np.trapezoid(c * xl, y) / S2
+        dx = np.gradient(xl, y)
+        dc = np.gradient(c, y)
+        self._tan_le = float(np.trapezoid(c * dx, y) / S2)
+        self._tan_dc = float(np.trapezoid(c * dc, y) / S2)
+
+    def fine_y(self, n: int) -> np.ndarray:
+        """Kırılma istasyonlarını da içeren yoğun y dağılımı."""
+        y = self.semi_span * np.sin(np.linspace(0.0, 0.5 * np.pi, n))
+        return np.unique(np.concatenate([y, self._y]))
+
+    def span_edges(self, n: int) -> np.ndarray:
+        """Uca doğru sıklaşan n aralıklı dağılım; planform kırılmaları kenar olarak korunur."""
+        y = self.semi_span * np.sin(np.linspace(0.0, 0.5 * np.pi, n + 1))
+        kinks = self._y[1:-1]
+        if len(kinks) and len(kinks) < 8:  # eliptik gibi yoğun tanımlı tiplerde gerek yok
+            tol = 0.3 * np.min(np.diff(y))
+            y = y[np.all(np.abs(y[:, None] - kinks[None, :]) > tol, axis=1)]
+            y = np.sort(np.concatenate([y, kinks]))
+        return y
 
     # ------------------------------------------------------------ planform
     @property
     def semi_span(self) -> float:
-        return 0.5 * self.span
+        return float(self._y[-1])
+
+    @property
+    def span(self) -> float:
+        return 2.0 * self.semi_span
+
+    @property
+    def root_chord(self) -> float:
+        return float(self._c[0])
 
     @property
     def tip_chord(self) -> float:
-        return self.taper_ratio * self.root_chord
+        return float(self._c[-1])
+
+    @property
+    def taper_ratio(self) -> float:
+        return self.tip_chord / self.root_chord
 
     @property
     def area(self) -> float:
         """Tam kanat referans (planform) alanı, m^2."""
-        return self.semi_span * (self.root_chord + self.tip_chord)
+        return self._area
 
     @property
     def aspect_ratio(self) -> float:
@@ -83,39 +135,39 @@ class DeltaWing:
 
     @property
     def mac(self) -> float:
-        lam = self.taper_ratio
-        return 2.0 / 3.0 * self.root_chord * (1 + lam + lam**2) / (1 + lam)
+        return self._mac
 
     @property
     def mac_y(self) -> float:
-        lam = self.taper_ratio
-        return self.span / 6.0 * (1 + 2 * lam) / (1 + lam)
+        return self._mac_y
 
     @property
     def mac_x_le(self) -> float:
-        return self.mac_y * np.tan(np.radians(self.le_sweep_deg))
+        return self._mac_xle
+
+    @property
+    def le_sweep_deg(self) -> float:
+        """Alan ağırlıklı ortalama hücum kenarı ok açısı."""
+        return float(np.degrees(np.arctan(self._tan_le)))
 
     @property
     def te_sweep_deg(self) -> float:
-        x_te_tip = self.x_le(self.semi_span) + self.tip_chord
-        return float(np.degrees(np.arctan2(x_te_tip - self.root_chord, self.semi_span)))
+        return float(np.degrees(np.arctan(self._tan_le + self._tan_dc)))
 
     def sweep_at(self, frac: float) -> float:
-        """Veterin ``frac`` oranındaki çizginin ok açısı (radyan)."""
-        tl = np.tan(np.radians(self.le_sweep_deg))
-        return float(np.arctan(tl - frac * (self.root_chord - self.tip_chord) / self.semi_span))
+        """Veterin ``frac`` oranındaki çizginin (alan ağırlıklı) ok açısı, radyan."""
+        return float(np.arctan(self._tan_le + frac * self._tan_dc))
 
     def x_le(self, y):
-        return np.abs(y) * np.tan(np.radians(self.le_sweep_deg))
+        return np.interp(np.abs(y), self._y, self._xle)
 
     def chord(self, y, min_ratio: float = 0.0):
-        eta = np.clip(np.abs(y) / self.semi_span, 0.0, 1.0)
-        lam = max(self.taper_ratio, min_ratio)
-        return self.root_chord * (1.0 - (1.0 - lam) * eta)
+        c = np.interp(np.abs(y), self._y, self._c)
+        return np.maximum(c, min_ratio * self.root_chord)
 
     def twist(self, y):
         eta = np.clip(np.abs(y) / self.semi_span, 0.0, 1.0)
-        return np.radians(self.twist_tip_deg) * eta
+        return np.radians(self.twist_tip_deg * eta + np.interp(np.abs(y), self._y, self._tw))
 
     def z_dihedral(self, y):
         return np.abs(y) * np.tan(np.radians(self.dihedral_deg))
@@ -138,14 +190,23 @@ class DeltaWing:
         zr = -dx * np.sin(th) + dz * np.cos(th)
         return self.x_le(y) + xr, np.full_like(xc, y, dtype=float), self.z_dihedral(y) + zr
 
-    def volume(self, n: int = 60) -> float:
-        """Yarı kanat değil tam kanat iç hacmi (m^3), yakıt/yapı kısıtları için."""
-        ys = np.linspace(0.0, self.semi_span, n)
+    def volume(self, n: int = 80) -> float:
+        """Tam kanat iç hacmi (m^3), yakıt/yapı kısıtları için."""
+        ys = self.fine_y(n)
         a = [self.section(y).area * self.chord(y) ** 2 for y in ys]
         return 2.0 * float(np.trapezoid(a, ys))
 
+    def planform_outline(self, n: int = 120):
+        """Tam kanat planform çevresi (y, x) - görselleştirme için."""
+        y = self.fine_y(n)
+        le, te = self.x_le(y), self.x_le(y) + self.chord(y)
+        ys = np.concatenate([-y[::-1], y, y[::-1], -y])
+        xs = np.concatenate([le[::-1], le, te[::-1], te])
+        return np.append(ys, ys[0]), np.append(xs, xs[0])
+
     def summary(self) -> dict:
         return {
+            "type": self.kind,
             "span_m": self.span,
             "root_chord_m": self.root_chord,
             "tip_chord_m": self.tip_chord,
@@ -159,26 +220,28 @@ class DeltaWing:
             "volume_m3": self.volume(),
         }
 
+
     # ------------------------------------------------------------ surface
     def surface_mesh(self, n_span: int = 40, min_tip_ratio: float = 0.02,
-                     root_extension: float = 0.0):
-        """Yarı kanadın kapalı üçgen yüzey ağı.
+                     root_extension: float = 0.0, full: bool = False):
+        """Yarı (veya ``full=True`` ile tam) kanadın kapalı üçgen yüzey ağı.
 
         ``root_extension`` > 0 ise kök kesiti y = -root_extension'a uzatılır:
         snappyHexMesh simetri düzlemini kanadın içinden temiz biçimde keser.
         Döndürür: (vertices (N,3), triangles (M,3) int)
         """
         # açıklıkta uca doğru sıklaşan dağılım
-        eta = np.sin(np.linspace(0.0, 0.5 * np.pi, n_span + 1))
-        ys = eta * self.semi_span
+        ys = self.span_edges(n_span)
         x = self.root_airfoil.x
         n = len(x) - 1
         loops = []
         yst = list(ys)
-        if root_extension > 0:
+        if full:
+            yst = [-y for y in ys[::-1]] + yst[1:]
+        elif root_extension > 0:
             yst = [-root_extension] + yst
         for y in yst:
-            ye = max(y, 0.0)
+            ye = abs(y) if full else max(y, 0.0)
             sec = self.section(ye)
             # döngü: TE -> üst -> LE -> alt -> (TE hariç)
             xc = np.concatenate([x[::-1], x[1:-1]])
@@ -230,6 +293,9 @@ class DeltaWing:
         area = np.linalg.norm(np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0]), axis=1)
         allt = allt[area > 1e-14 * self.root_chord**2]
         return verts, allt
+
+
+DeltaWing = Wing  # geriye dönük uyumluluk
 
 
 # --------------------------------------------------------------------------- STL

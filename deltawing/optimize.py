@@ -32,6 +32,7 @@ import yaml
 from scipy import optimize as so
 
 from .config import get_path, set_path
+from .atmosphere import apply_atmosphere
 from .geometry import DeltaWing
 from .vlm import QuickAero
 
@@ -66,6 +67,7 @@ def _alpha_for_lift(qa: QuickAero, target_n: float) -> float:
 def evaluate(cfg: dict, fidelity: str = "vlm", case_dir: Path | None = None) -> dict:
     """Tek tasarımın aerodinamik sonucunu ve geometri özetini döndürür."""
     o = cfg["optimization"]
+    apply_atmosphere(cfg)
     wing = DeltaWing.from_config(cfg)
     geo = wing.summary()
     if fidelity == "vlm":
@@ -108,7 +110,7 @@ def constraint_violation(res: dict, cons: dict) -> float:
     return v
 
 
-def run_optimization(cfg: dict, log=print) -> dict:
+def run_optimization(cfg: dict, log=print, callback=None, cancel_event=None) -> dict:
     o = cfg["optimization"]
     variables = o.get("variables") or {}
     if not variables:
@@ -135,7 +137,7 @@ def run_optimization(cfg: dict, log=print) -> dict:
 
     def fun(u):
         nonlocal writer
-        if len(history) >= max_evals:
+        if len(history) >= max_evals or (cancel_event is not None and cancel_event.is_set()):
             raise _Budget
         x = lo_hi(np.asarray(u))
         c = apply_design(cfg, names, x)
@@ -164,12 +166,13 @@ def run_optimization(cfg: dict, log=print) -> dict:
             writer.writeheader()
         writer.writerow(rec)
         csv_file.flush()
-        if f < best["f"]:
+        if f < best["f"] and rec.get("ok"):
             best.update(rec)
             best["x"] = x.tolist()
-            if rec.get("ok"):
-                log(f"[{i:4d}] yeni en iyi f={f:.5g}  CL={rec['CL']:.4f} CD={rec['CD']:.5f} "
-                    f"L/D={rec['L_over_D']:.3f}  " + "  ".join(f"{n}={v:.4g}" for n, v in zip(names, x)))
+            log(f"[{i:4d}] yeni en iyi f={f:.5g}  CL={rec['CL']:.4f} CD={rec['CD']:.5f} "
+                f"L/D={rec['L_over_D']:.3f}  " + "  ".join(f"{n}={v:.4g}" for n, v in zip(names, x)))
+        if callback is not None:
+            callback(rec, dict(best), len(history), max_evals)
         return f
 
     method = str(o.get("method", "differential_evolution")).lower()
@@ -191,13 +194,17 @@ def run_optimization(cfg: dict, log=print) -> dict:
         else:
             raise ValueError(f"Bilinmeyen yöntem: {method}")
     except _Budget:
-        log(f"Değerlendirme bütçesi ({max_evals}) doldu.")
+        if cancel_event is not None and cancel_event.is_set():
+            log("Optimizasyon kullanıcı tarafından durduruldu; o ana kadarki en iyi tasarım kaydediliyor.")
+        else:
+            log(f"Değerlendirme bütçesi ({max_evals}) doldu.")
     finally:
         csv_file.close()
 
     if "x" not in best:
         raise RuntimeError("Hiçbir geçerli tasarım bulunamadı")
     best_cfg = apply_design(cfg, names, best["x"])
+    best_cfg.pop("optimization", None)
     best_cfg.pop("_base_dir", None)
     (out / "best_config.yaml").write_text(yaml.safe_dump(best_cfg, sort_keys=False, allow_unicode=True))
     summary = {

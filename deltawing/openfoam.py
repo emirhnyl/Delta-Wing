@@ -20,12 +20,17 @@ import math
 import os
 import re
 import shutil
+import signal
 import subprocess
+import time
 from pathlib import Path
 
 import numpy as np
 
-from .geometry import DeltaWing, write_stl
+from .external import Body, body_from_wing
+from .geometry import write_stl
+from . import runner as _runner
+from .runner import find_bashrc, use_function_objects  # noqa: F401 (geriye uyum)
 
 HEADER = """/*--------------------------------*- C++ -*----------------------------------*\\
   deltawing otomatik vaka üreticisi tarafından oluşturuldu - elle düzenlemeyin
@@ -62,10 +67,10 @@ def flow_vectors(alpha_deg: float):
 
 
 class OpenFOAMCase:
-    """Tek bir hücum açısı için tam OpenFOAM vakası."""
+    """Tek bir hücum açısı için tam OpenFOAM vakası (kanat veya harici gövde)."""
 
-    def __init__(self, wing: DeltaWing, cfg: dict, alpha_deg: float, case_dir: str | Path):
-        self.wing = wing
+    def __init__(self, body, cfg: dict, alpha_deg: float, case_dir: str | Path):
+        self.body: Body = body if isinstance(body, Body) else body_from_wing(body, cfg)
         self.cfg = cfg
         self.of = cfg["openfoam"]
         self.alpha = float(alpha_deg)
@@ -91,13 +96,13 @@ class OpenFOAMCase:
         return k, omega
 
     def domain(self):
-        c = self.wing.root_chord
+        c = self.body.char_length
         d = self.of["domain"]
-        s = self.wing.semi_span
-        zmid = self.wing.z_dihedral(s) * 0.5
-        xmin, xmax = -d["upstream"] * c, c + d["downstream"] * c
-        ymin, ymax = 0.0, s + d["lateral"] * c
-        zmin, zmax = zmid - d["vertical"] * c, zmid + d["vertical"] * c
+        lo_b, hi_b = self.body.verts.min(axis=0), self.body.verts.max(axis=0)
+        xmin, xmax = lo_b[0] - d["upstream"] * c, hi_b[0] + d["downstream"] * c
+        ymax = hi_b[1] + d["lateral"] * c
+        ymin = 0.0 if self.body.symmetric else lo_b[1] - d["lateral"] * c
+        zmin, zmax = lo_b[2] - d["vertical"] * c, hi_b[2] + d["vertical"] * c
         return np.array([xmin, ymin, zmin]), np.array([xmax, ymax, zmax])
 
     # --------------------------------------------------------------- writers
@@ -106,10 +111,7 @@ class OpenFOAMCase:
         if case.exists():
             shutil.rmtree(case)
         (case / "constant" / "triSurface").mkdir(parents=True)
-        g = self.cfg["geometry"]
-        # kök kesitini y<0'a uzat: snappy simetri düzlemini kanadın içinde keser
-        ext = 0.02 * self.wing.root_chord
-        v, t = self.wing.surface_mesh(int(g["n_span"]), float(g["min_tip_chord_ratio"]), ext)
+        v, t = self.body.verts, self.body.tris
         write_stl(case / "constant" / "triSurface" / "wing.stl", v, t, "wing")
         self.bbox_wing = (v.min(axis=0), v.max(axis=0))
 
@@ -127,20 +129,26 @@ class OpenFOAMCase:
             "velocity": self.U,
             "density": self.rho,
             "kinematic_viscosity": self.nu,
-            "Aref_half_m2": 0.5 * self.wing.area,
-            "Aref_full_m2": self.wing.area,
-            "lRef_m": self.wing.mac,
-            "wing": self.wing.summary(),
+            "Aref_half_m2": 0.5 * self.body.aref,
+            "Aref_full_m2": self.body.aref,
+            "lRef_m": self.body.lref,
+            "CofR": self.body.cofr.tolist(),
+            "symmetric": self.body.symmetric,
+            "runner": _runner.resolve_runner(self.cfg),
+            "turbulence_model": self.of["turbulence_model"],
+            "wing": self.body.info,
         }
         (case / "case_info.json").write_text(json.dumps(meta, indent=2))
         return case
 
     def _block_mesh(self):
         lo, hi = self.domain()
-        h = float(self.of["base_cell_size"]) * self.wing.root_chord
+        h = float(self.of["base_cell_size"]) * self.body.char_length
         n = np.maximum(np.ceil((hi - lo) / h).astype(int), 1)
         x0, y0, z0 = lo
         x1, y1, z1 = hi
+        sym_patch = ("\n    symmetry\n    {\n        type symmetryPlane;\n        faces\n        (\n"
+                     "            (0 1 5 4)\n        );\n    }") if self.body.symmetric else ""
         _write(self.case, "system/blockMeshDict", f"""
 scale 1;
 
@@ -174,17 +182,9 @@ boundary
             (1 2 6 5)
             (3 7 6 2)
             (0 3 2 1)
-            (4 5 6 7)
+            (4 5 6 7){"" if self.body.symmetric else chr(10) + "            (0 1 5 4)"}
         );
-    }}
-    symmetry
-    {{
-        type symmetryPlane;
-        faces
-        (
-            (0 1 5 4)
-        );
-    }}
+    }}{sym_patch}
 );
 
 mergePatchPairs ();
@@ -210,13 +210,15 @@ wing.stl
 
     def _snappy(self):
         of = self.of
-        c = self.wing.root_chord
+        c = self.body.char_length
+        sym = self.body.symmetric
         lo_w, hi_w = self.bbox_wing
         pad = 0.25 * c
         near_min = lo_w - pad
         near_max = hi_w + pad
-        near_min[1] = -1.0  # simetri düzleminin ötesine
-        wake_min = np.array([lo_w[0] - 0.5 * c, -1.0, lo_w[2] - 0.5 * c])
+        if sym:
+            near_min[1] = -1.0  # simetri düzleminin ötesine
+        wake_min = np.array([lo_w[0] - 0.5 * c, -1.0 if sym else lo_w[1] - 0.5 * c, lo_w[2] - 0.5 * c])
         wake_max = np.array([hi_w[0] + float(of["wake_length"]) * c, hi_w[1] + 0.5 * c,
                              hi_w[2] + 0.5 * c])
         # iz, serbest akış yönünde (hücum açısıyla) yükselir; kutuyu o yöne genişlet
@@ -225,8 +227,8 @@ wing.stl
         wake_max[2] += max(rise, 0.0)
         lo, hi = self.domain()
         # locationInMesh: kanadın önünde, hücre yüzlerine denk gelmeyen bir nokta
-        loc = np.array([lo[0] + 0.5137 * (0.0 - lo[0]),
-                        0.5 * (hi[1] - lo[1]) + 0.0123 * c,
+        loc = np.array([lo[0] + 0.5137 * (lo_w[0] - lo[0]),
+                        lo[1] + 0.5 * (hi[1] - lo[1]) + 0.0123 * c,
                         lo[2] + 0.4871 * (hi[2] - lo[2])])
         sl = of["surface_level"]
         L = of["layers"]
@@ -369,7 +371,8 @@ mergeTolerance 1e-6;
     def _control_dict(self):
         of = self.of
         drag_dir, lift_dir = flow_vectors(self.alpha)
-        cofr = np.array([self.wing.mac_x_le + 0.25 * self.wing.mac, 0.0, 0.0])
+        cofr = self.body.cofr
+        aref_case = 0.5 * self.body.aref if self.body.symmetric else self.body.aref
         body = f"""
 application     simpleFoam;
 startFrom       latestTime;
@@ -417,8 +420,8 @@ functions
         CofR            {_vec(cofr)};
         pitchAxis       (0 1 0);
         magUInf         {self.U};
-        lRef            {self.wing.mac:.8g};
-        Aref            {0.5 * self.wing.area:.8g};
+        lRef            {self.body.lref:.8g};
+        Aref            {aref_case:.8g};
     }}
 
     yPlus
@@ -675,10 +678,10 @@ hierarchicalCoeffs
         if par:
             lines += [
                 "decomposePar -force > log.decomposePar.mesh 2>&1",
-                f"mpirun -np {n} snappyHexMesh -overwrite -parallel > log.snappyHexMesh 2>&1",
+                f"mpirun --oversubscribe -np {n} snappyHexMesh -overwrite -parallel > log.snappyHexMesh 2>&1",
                 "for d in processor*; do rm -rf $d/0; cp -r 0.orig $d/0; done",
-                f"mpirun -np {n} checkMesh -parallel > log.checkMesh 2>&1 || true",
-                f"mpirun -np {n} simpleFoam -parallel > log.simpleFoam 2>&1",
+                f"mpirun --oversubscribe -np {n} checkMesh -parallel > log.checkMesh 2>&1 || true",
+                f"mpirun --oversubscribe -np {n} simpleFoam -parallel > log.simpleFoam 2>&1",
                 "reconstructParMesh -constant > log.reconstructParMesh 2>&1 || true",
                 "reconstructPar -latestTime > log.reconstructPar 2>&1 || true",
             ]
@@ -698,50 +701,64 @@ hierarchicalCoeffs
         c.chmod(0o755)
 
     # --------------------------------------------------------------- run
-    def run(self, timeout: float | None = None) -> None:
-        bashrc = find_bashrc(self.cfg)
-        cmd = f"source {bashrc} > /dev/null 2>&1; ./Allrun" if bashrc else "./Allrun"
-        env = dict(os.environ)
-        env.setdefault("OMPI_ALLOW_RUN_AS_ROOT", "1")
-        env.setdefault("OMPI_ALLOW_RUN_AS_ROOT_CONFIRM", "1")
-        proc = subprocess.run(["bash", "-c", cmd], cwd=self.case, env=env, timeout=timeout,
-                              capture_output=True, text=True)
+    def run(self, timeout: float | None = None, cancel_event=None) -> None:
+        """Allrun'ı yerelde veya Docker'da çalıştırır. ``cancel_event`` (threading.Event)
+        set edilirse süreç (ve kapsayıcı) sonlandırılır."""
+        argv, env, container = _runner.build_command(self.case, self.cfg)
+        (self.case / "run_command.txt").write_text(" ".join(argv) + "\n")
+        proc = subprocess.Popen(argv, cwd=self.case, env=env, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True, start_new_session=True)
+        start = time.time()
+        try:
+            while proc.poll() is None:
+                if cancel_event is not None and cancel_event.is_set():
+                    self._kill(proc, container)
+                    raise RuntimeError("İptal edildi")
+                if timeout and time.time() - start > timeout:
+                    self._kill(proc, container)
+                    raise RuntimeError(f"Zaman aşımı ({timeout:.0f} s)")
+                time.sleep(0.5)
+        finally:
+            out = proc.stdout.read() if proc.stdout else ""
+            (self.case / "log.runner").write_text(out or "")
         if proc.returncode != 0:
             logs = sorted(self.case.glob("log.*"), key=lambda p: p.stat().st_mtime)
-            tail = logs[-1].read_text()[-3000:] if logs else proc.stderr
-            raise RuntimeError(f"OpenFOAM çalıştırması başarısız ({self.case}):\n{tail}")
+            logs = [lg for lg in logs if lg.name != "log.runner"] or logs
+            tail = logs[-1].read_text(errors="replace")[-3000:] if logs else out[-3000:]
+            raise RuntimeError(f"OpenFOAM çalıştırması başarısız ({self.case.name}, "
+                               f"{logs[-1].name if logs else 'runner'}):\n{tail}\n{out[-1500:]}")
+
+    @staticmethod
+    def _kill(proc, container):
+        if container:
+            _runner.kill_container(container)
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+        try:
+            proc.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            os.killpg(proc.pid, signal.SIGKILL)
 
     # --------------------------------------------------------------- results
     def results(self) -> dict:
         return read_results(self.case, int(self.of.get("average_last", 100)))
 
 
-def use_function_objects(cfg: dict) -> bool:
-    """Ubuntu/Debian 'openfoam' (1912) paketinde tüm fonksiyon nesneleri
-    'error in IOstream "sha1"' hatasıyla çöker; orada otomatik kapatılır."""
-    mode = str(cfg["openfoam"].get("function_objects", "auto")).lower()
-    if mode in ("true", "on", "1", "yes"):
-        return True
-    if mode in ("false", "off", "0", "no"):
-        return False
-    return find_bashrc(cfg) != "/usr/share/openfoam/etc/bashrc"
-
-
-# ------------------------------------------------------------------- parsing
-
-
 def _read_dat(path: Path):
+    """OpenFOAM postProcessing .dat dosyası: (sütun adları, veri dizisi)."""
     names, rows = None, []
     for line in path.read_text().splitlines():
-        s = line.strip()
-        if not s:
+        t = line.strip()
+        if not t:
             continue
-        if s.startswith("#"):
-            toks = s.lstrip("#").split()
+        if t.startswith("#"):
+            toks = t.lstrip("#").split()
             if toks and toks[0] == "Time":
                 names = toks
             continue
-        vals = re.sub(r"[()]", " ", s).split()
+        vals = re.sub(r"[()]", " ", t).split()
         try:
             rows.append([float(v) for v in vals])
         except ValueError:
@@ -770,12 +787,16 @@ def read_results(case: str | Path, average_last: int = 100) -> dict:
     tail = data[-min(average_last, len(data)):]
     cd = float(tail[:, idx["Cd"]].mean())
     cl = float(tail[:, idx["Cl"]].mean())
+    cm_key = next((k for k in ("CmPitch", "Cm") if k in idx), None)
+    cm = float(tail[:, idx[cm_key]].mean()) if cm_key else None
+    fac = 2.0 if info.get("symmetric", True) else 1.0
     q = 0.5 * info["density"] * info["velocity"] ** 2
     S = info["Aref_full_m2"]  # yarı model Aref ile normalize -> katsayılar tam kanat için geçerli
     res = {
         "alpha_deg": info["alpha_deg"],
         "CL": cl,
         "CD": cd,
+        "CM": cm,
         "lift_N": cl * q * S,
         "drag_N": cd * q * S,
         "L_over_D": cl / cd if cd != 0 else float("nan"),
@@ -785,6 +806,7 @@ def read_results(case: str | Path, average_last: int = 100) -> dict:
         "CL_std_last": float(tail[:, idx["Cl"]].std()),
         "CD_std_last": float(tail[:, idx["Cd"]].std()),
         "method": "openfoam-rans",
+        "converged_hint": _convergence_hint(tail[:, idx["Cl"]], tail[:, idx["Cd"]]),
     }
     # pressure / viscous ayrımı (forces çıktısından)
     ff = sorted((case / "postProcessing").glob("forces*/*/force.dat"))
@@ -795,10 +817,10 @@ def read_results(case: str | Path, average_last: int = 100) -> dict:
             t = fd[-min(average_last, len(fd)):].mean(axis=0)
             # sütunlar: Time total(3) pressure(3) viscous(3)
             fp, fv = t[4:7], t[7:10]
-            res["drag_pressure_N"] = 2 * float(fp @ drag_dir)
-            res["drag_viscous_N"] = 2 * float(fv @ drag_dir)
-            res["lift_pressure_N"] = 2 * float(fp @ lift_dir)
-            res["lift_viscous_N"] = 2 * float(fv @ lift_dir)
+            res["drag_pressure_N"] = fac * float(fp @ drag_dir)
+            res["drag_viscous_N"] = fac * float(fv @ drag_dir)
+            res["lift_pressure_N"] = fac * float(fp @ lift_dir)
+            res["lift_viscous_N"] = fac * float(fv @ lift_dir)
         except Exception:  # noqa: BLE001 - isteğe bağlı bilgi
             pass
     return res
@@ -810,64 +832,52 @@ def results_from_fields(case: str | Path) -> dict:
 
     case = Path(case)
     info = json.loads((case / "case_info.json").read_text())
-    f = integrate_forces(case, "wing", info["density"], info["kinematic_viscosity"])
+    f = integrate_forces(case, "wing", info["density"], info["kinematic_viscosity"],
+                         info.get("CofR", [0.0, 0.0, 0.0]))
     drag_dir, lift_dir = flow_vectors(info["alpha_deg"])
     q = 0.5 * info["density"] * info["velocity"] ** 2
     S = info["Aref_full_m2"]
-    lift = 2.0 * float(f["total"] @ lift_dir)   # yarı model -> tam kanat
-    drag = 2.0 * float(f["total"] @ drag_dir)
+    fac = 2.0 if info.get("symmetric", True) else 1.0   # yarı model -> tam gövde
+    lift = fac * float(f["total"] @ lift_dir)
+    drag = fac * float(f["total"] @ drag_dir)
     return {
         "alpha_deg": info["alpha_deg"],
         "CL": lift / (q * S),
         "CD": drag / (q * S),
+        "CM": fac * float(f["moment"][1]) / (q * S * info["lRef_m"]),
         "lift_N": lift,
         "drag_N": drag,
         "L_over_D": lift / drag if drag != 0 else float("nan"),
         "q_Pa": q,
         "area_m2": S,
         "iterations": int(f["time"]),
-        "drag_pressure_N": 2.0 * float(f["pressure"] @ drag_dir),
-        "drag_viscous_N": 2.0 * float(f["viscous"] @ drag_dir),
-        "lift_pressure_N": 2.0 * float(f["pressure"] @ lift_dir),
-        "lift_viscous_N": 2.0 * float(f["viscous"] @ lift_dir),
+        "drag_pressure_N": fac * float(f["pressure"] @ drag_dir),
+        "drag_viscous_N": fac * float(f["viscous"] @ drag_dir),
+        "lift_pressure_N": fac * float(f["pressure"] @ lift_dir),
+        "lift_viscous_N": fac * float(f["viscous"] @ lift_dir),
         "method": "openfoam-rans (alan integrasyonu)",
     }
 
 
-def run_openfoam(wing: DeltaWing, cfg: dict, alpha_deg: float, case_dir: str | Path,
-                 execute: bool = True, timeout: float | None = None) -> dict | None:
-    case = OpenFOAMCase(wing, cfg, alpha_deg, case_dir)
+def _convergence_hint(cl, cd) -> str:
+    """Son pencere içindeki salınıma göre kaba yakınsama değerlendirmesi."""
+    def rel(a):
+        m = abs(float(np.mean(a)))
+        return float(np.ptp(a)) / m if m > 1e-9 else float(np.ptp(a))
+    r = max(rel(cl), rel(cd))
+    return "iyi" if r < 0.01 else ("orta" if r < 0.05 else "zayıf")
+
+
+def run_openfoam(body, cfg: dict, alpha_deg: float, case_dir: str | Path,
+                 execute: bool = True, timeout: float | None = None, cancel_event=None) -> dict | None:
+    """``body``: Wing veya external.Body."""
+    case = OpenFOAMCase(body, cfg, alpha_deg, case_dir)
     case.write()
     if not execute:
         return None
-    case.run(timeout=timeout)
+    case.run(timeout=timeout, cancel_event=cancel_event)
     return case.results()
 
 
-BASHRC_CANDIDATES = (
-    "/usr/share/openfoam/etc/bashrc",           # Ubuntu/Debian 'openfoam' paketi
-    "/usr/lib/openfoam/openfoam*/etc/bashrc",   # openfoam.com deb/rpm paketleri
-    "/opt/openfoam*/etc/bashrc",                # openfoam.org paketleri
-    "~/OpenFOAM/OpenFOAM-*/etc/bashrc",         # kaynaktan derleme
-)
-
-
-def find_bashrc(cfg: dict) -> str | None:
-    """OpenFOAM ortam dosyası; ortam zaten yüklüyse (WM_PROJECT_DIR) None."""
-    if cfg["openfoam"].get("bashrc"):
-        return str(Path(cfg["openfoam"]["bashrc"]).expanduser())
-    if os.environ.get("WM_PROJECT_DIR"):
-        return None
-    import glob
-    for pat in BASHRC_CANDIDATES:
-        hits = sorted(glob.glob(os.path.expanduser(pat)))
-        if hits:
-            return hits[-1]
-    return None
-
-
 def openfoam_available(cfg: dict) -> bool:
-    rc = find_bashrc(cfg)
-    if rc:
-        return Path(rc).exists()
-    return shutil.which("simpleFoam") is not None
+    return _runner.resolve_runner(cfg) != "none"

@@ -169,3 +169,36 @@ def plot_history(history: list[dict], path: str | Path, objective: str) -> Path:
     fig.savefig(path, dpi=130, facecolor=SURFACE)
     plt.close(fig)
     return Path(path)
+
+
+def plot_body(body, path: str | Path, title: str = "Harici geometri") -> Path:
+    """Harici gövde: 3 görünüş + 3B."""
+    from .external import decimate_for_view
+
+    v, t = decimate_for_view(body.verts, body.tris, 20000)
+    fig = plt.figure(figsize=(12, 7.5), facecolor=SURFACE)
+    views = [(1, "Üstten (x-y)", 0, 1), (2, "Yandan (x-z)", 0, 2), (4, "Önden (y-z)", 1, 2)]
+    for pos, name, i, j in views:
+        ax = fig.add_subplot(2, 2, pos)
+        ax.triplot(v[:, i], v[:, j], t, color=SERIES[0], lw=0.15, alpha=0.6)
+        ax.set_aspect("equal")
+        ax.set_title(name, fontsize=11)
+        ax.set_xlabel("xyz"[i] + " [m]")
+        ax.set_ylabel("xyz"[j] + " [m]")
+        _style(ax)
+    ax = fig.add_subplot(2, 2, 3, projection="3d")
+    ax.plot_trisurf(v[:, 0], v[:, 1], v[:, 2], triangles=t, color=SERIES[0], alpha=0.85, linewidth=0)
+    lo, hi = v.min(axis=0), v.max(axis=0)
+    r = 0.55 * (hi - lo).max()
+    c = 0.5 * (lo + hi)
+    ax.set_xlim(c[0] - r, c[0] + r)
+    ax.set_ylim(c[1] - r, c[1] + r)
+    ax.set_zlim(c[2] - r, c[2] + r)
+    ax.view_init(elev=25, azim=-130)
+    ax.set_title(title, fontsize=11, color=INK)
+    fig.tight_layout()
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, dpi=120, facecolor=SURFACE)
+    plt.close(fig)
+    return path
