@@ -1,0 +1,68 @@
+# ============================================================================
+#  Delta kanat - temel tasarım (baseline) konfigürasyonu
+#  Tüm uzunluklar metre, açılar derece.
+# ============================================================================
+
+flow:
+  velocity: 50.0              # serbest akış hızı [m/s]
+  density: 1.225              # hava yoğunluğu [kg/m^3]
+  kinematic_viscosity: 1.5e-5 # [m^2/s]
+  speed_of_sound: 340.3
+  alpha_deg: [0, 4, 8, 12, 16]  # analiz edilecek hücum açıları
+
+wing:
+  root_chord: 1.0         # kök veteri
+  span: 1.2               # uçtan uca açıklık (tam kanat)
+  le_sweep_deg: 60.0      # hücum kenarı ok açısı
+  taper_ratio: 0.05       # uç/kök veter oranı (saf delta = 0)
+  twist_tip_deg: 0.0      # uç burulması (negatif = washout)
+  twist_axis: 0.25
+  dihedral_deg: 0.0
+
+airfoil:
+  n_points: 60            # yüzey başına profil noktası
+  # Kök ve uç profili; aradaki kesitler doğrusal karıştırılır.
+  # Tipler:
+  #   naca4 : code: "0008"   veya  camber / camber_pos / thickness (sürekli)
+  #   cst   : upper: [..], lower: [..], te_thickness
+  #   file  : path: profiles/benim_profilim.dat  (Selig formatı)
+  root:
+    type: naca4
+    camber: 0.0
+    camber_pos: 0.4
+    thickness: 0.08
+  tip:
+    type: naca4
+    camber: 0.0
+    camber_pos: 0.4
+    thickness: 0.06
+  blend_exponent: 1.0
+
+geometry:
+  n_span: 40              # STL açıklık istasyonları
+  min_tip_chord_ratio: 0.02
+
+vlm:                      # hızlı çözücü (optimizasyon için)
+  n_chord: 12
+  n_span: 24
+  vortex_lift: auto       # auto: ok açısı >= 45 deg ise Polhamus girdap kaldırması
+
+openfoam:                 # 3B RANS CFD
+  case_dir: runs/cfd/baseline
+  bashrc: null            # null = otomatik bul (örn. /usr/lib/openfoam/openfoam2312/etc/bashrc)
+  domain: {upstream: 5, downstream: 10, lateral: 5, vertical: 5}   # kök veteri cinsinden
+  base_cell_size: 0.25    # arka plan hücre boyu / kök veteri
+  surface_level: [5, 6]   # kanat yüzeyi rafinasyon seviyesi (min max)
+  feature_level: 6        # keskin kenarlar (hücum/firar kenarı, uç)
+  near_level: 3
+  wake_level: 2
+  wake_length: 3.0
+  layers: {enabled: false, n: 3, expansion: 1.2, final_thickness: 0.4}
+  turbulence_model: kOmegaSST
+  turbulence_intensity: 0.001
+  viscosity_ratio: 10
+  iterations: 1500
+  write_interval: 500
+  n_procs: 4
+  average_last: 100
+  function_objects: auto

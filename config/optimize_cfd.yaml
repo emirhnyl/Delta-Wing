@@ -1,0 +1,30 @@
+# ============================================================================
+#  Örnek: doğrudan 3B RANS CFD ile optimizasyon (pahalı!)
+#  Her değerlendirme tam bir OpenFOAM çözümüdür; az değişken + Nelder-Mead önerilir.
+#  Tipik iş akışı: önce optimize_vlm.yaml, sonra en iyi tasarım etrafında bu dosya.
+# ============================================================================
+
+wing: {root_chord: 1.0, span: 1.2, le_sweep_deg: 60.0, taper_ratio: 0.05}
+airfoil:
+  root: {type: naca4, camber: 0.0, camber_pos: 0.4, thickness: 0.08}
+  tip:  {type: naca4, camber: 0.0, camber_pos: 0.4, thickness: 0.06}
+
+openfoam:
+  base_cell_size: 0.4
+  surface_level: [4, 5]
+  feature_level: 5
+  iterations: 600
+  n_procs: 4
+
+optimization:
+  fidelity: openfoam
+  method: nelder-mead
+  alpha_deg: 8
+  objective: max_LD
+  max_evals: 30
+  output_dir: runs/optimization/cfd_max_LD
+  constraints:
+    min_lift_N: 250
+  variables:
+    wing.le_sweep_deg: [50, 70]
+    airfoil.root.thickness: [0.05, 0.10]

@@ -1,0 +1,44 @@
+# ============================================================================
+#  Örnek optimizasyon: sabit kaldırmada (seyir) sürüklemeyi en aza indir
+#  Hızlı çözücü (VLM + Polhamus + viskoz) ile binlerce tasarım taranır;
+#  --verify ile en iyi tasarım 3B RANS CFD ile doğrulanır.
+# ============================================================================
+
+flow:
+  velocity: 50.0
+  alpha_deg: [0, 4, 8, 12, 16]
+
+wing:
+  root_chord: 1.0
+  span: 1.2
+  le_sweep_deg: 60.0
+  taper_ratio: 0.05
+
+airfoil:
+  root: {type: naca4, camber: 0.0, camber_pos: 0.4, thickness: 0.08}
+  tip:  {type: naca4, camber: 0.0, camber_pos: 0.4, thickness: 0.06}
+
+openfoam:
+  n_procs: 4
+
+optimization:
+  fidelity: vlm                 # vlm (hızlı) | openfoam (her değerlendirme tam CFD)
+  method: differential_evolution
+  mode: fixed_lift              # fixed_alpha | fixed_lift
+  lift_target_N: 300            # fixed_lift: her tasarım bu kaldırmayı üretecek açıda değerlendirilir
+  alpha_deg: 8                  # fixed_alpha modunda kullanılır
+  objective: min_drag
+  max_evals: 600
+  seed: 1
+  output_dir: runs/optimization/vlm_min_drag
+  constraints:
+    min_volume_m3: 0.018        # iç hacim (yakıt / yapı / sistemler)
+    max_span_m: 1.5
+  variables:                    # noktalı yol: [alt, üst]
+    wing.span: [0.9, 1.5]
+    wing.le_sweep_deg: [50, 70]
+    wing.taper_ratio: [0.0, 0.3]
+    wing.twist_tip_deg: [-4, 1]
+    airfoil.root.thickness: [0.05, 0.12]
+    airfoil.root.camber: [0.0, 0.04]
+    airfoil.tip.thickness: [0.04, 0.10]
